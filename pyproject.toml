@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vulnscan-agent"
+version = "0.1.0"
+description = "Agent-native vulnerability scanner using LangGraph + LangChain + LangFuse"
+requires-python = ">=3.11"
+dependencies = [
+    # Pinned to known-patched versions: LangDrained CVE class (unauthenticated
+    # get_state_history / checkpointer RCE via langgraph dev/serve).
+    # Never run `langgraph dev` or expose checkpoint endpoints publicly.
+    "langgraph>=1.2.6",
+    "langgraph-checkpoint-sqlite>=3.1.0",
+    "langchain>=0.3.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langfuse>=4.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+# graph/models/observability are top-level single-file modules, not packages —
+# declare them as py-modules so a non-editable `pip install .` installs them.
+[tool.setuptools]
+py-modules = ["graph", "models", "observability"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tools*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,125 @@
+# Reusable vulnerability-scan workflow (agent-native: LangGraph + VulnLLM-R-7B).
+#
+# Consuming repos call this via `uses:` — see examples/caller.yml. The agent code
+# is vendored in THIS repo, so the workflow checks itself out alongside the
+# caller's code and runs the scan against the caller workspace.
+#
+# Requires three LLM API keys (orchestrator + specialist + second-opinion),
+# passed as secrets by the caller (or inherited from org-level secrets).
+
+name: vulnscan (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      scan_path:
+        description: "Path within the caller repo to scan."
+        type: string
+        default: "."
+      fail_on:
+        description: "Severity threshold that fails CI: CRITICAL | HIGH | MEDIUM | LOW."
+        type: string
+        default: "HIGH"
+      orch_model:
+        description: "Override orchestrator model (default: agent's built-in glm-5.2)."
+        type: string
+        required: false
+        default: ""
+      python_version:
+        type: string
+        default: "3.11"
+      action_ref:
+        description: "Ref of this action repo to vendor (keep in sync with the @ref the caller pins)."
+        type: string
+        default: "v1"
+    secrets:
+      ZAI_API_KEY:
+        required: true
+      FEATHERLESS_API_KEY:
+        required: true
+      DEEPSEEK_API_KEY:
+        required: true
+      LANGFUSE_HOST:
+        required: false
+      LANGFUSE_PUBLIC_KEY:
+        required: false
+      LANGFUSE_SECRET_KEY:
+        required: false
+
+jobs:
+  vulnscan:
+    name: Agent Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # SARIF upload to code scanning
+    steps:
+      - name: Checkout caller repo (code under scan)
+        uses: actions/checkout@v4
+        with:
+          path: target
+
+      - name: Checkout vulnscan-action (agent)
+        uses: actions/checkout@v4
+        with:
+          repository: atvirokodosprendimai/vulnscan-action
+          ref: ${{ inputs.action_ref }}
+          path: agent
+
+      - name: Set up Python ${{ inputs.python_version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Set up Go (for gosec / govulncheck)
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install vulnscan-agent
+        run: pip install ./agent
+
+      - name: Install static scanners (best-effort)
+        continue-on-error: true
+        run: |
+          pip install semgrep pip-audit
+          go install github.com/securego/gosec/v2/cmd/gosec@latest || true
+          go install golang.org/x/vuln/cmd/govulncheck@latest || true
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run vulnerability scan
+        # Scan ONLY the caller's code (target/), never the agent (agent/) or the
+        # workspace — scan.sh's sys.path shim loads modules + the tuned prompt
+        # from agent/, output goes to runner.temp.
+        env:
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          FEATHERLESS_API_KEY: ${{ secrets.FEATHERLESS_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          ORCH_MODEL: ${{ inputs.orch_model }}
+          FAIL_ON: ${{ inputs.fail_on }}
+          SCAN_WORKSPACE: ${{ runner.temp }}/scan
+        run: bash ./agent/ci/scan.sh "target/${{ inputs.scan_path }}"
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ runner.temp }}/scan/results.sarif
+          # Relativize %SRCROOT% URIs against the caller checkout so annotations
+          # land on the right files in the Security tab / PR.
+          checkout_path: ${{ github.workspace }}/target
+
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulnscan-results-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/scan/results.sarif
+            ${{ runner.temp }}/scan/report.md
+          retention-days: 30
+        continue-on-error: true

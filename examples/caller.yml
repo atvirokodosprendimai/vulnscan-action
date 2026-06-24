@@ -1,0 +1,30 @@
+# Drop this into a consuming repo at .github/workflows/vulnscan.yml
+#
+# The three LLM API keys can be set per-repo OR (recommended) as ORG-LEVEL
+# GitHub secrets so every repo's caller inherits them automatically.
+
+name: Vulnerability Scan
+
+on:
+  pull_request:
+  workflow_dispatch:        # manual runs; add `push:` only if you accept the per-run LLM cost
+
+jobs:
+  scan:
+    uses: atvirokodosprendimai/vulnscan-action/.github/workflows/vulnscan.yml@v1
+    permissions:
+      contents: read
+      security-events: write
+    with:
+      fail_on: HIGH
+      # scan_path: "."
+      # python_version: "3.11"
+      action_ref: v1         # keep equal to the @ref pinned in `uses:` above
+    secrets:
+      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+      FEATHERLESS_API_KEY: ${{ secrets.FEATHERLESS_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      # Optional observability:
+      # LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+      # LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      # LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}

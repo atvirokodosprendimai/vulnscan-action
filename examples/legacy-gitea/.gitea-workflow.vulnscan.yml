@@ -1,0 +1,90 @@
+# vulnscan-agent Gitea Actions workflow template
+#
+# USAGE: Copy this file to .gitea/workflows/vulnscan.yml in the target repo.
+# Do NOT place it there from this template location.
+#
+# DIFFERENCES FROM GITHUB VARIANT (.github-workflow.vulnscan.yml):
+#   - Runs on storulis Gitea act_runner (self-hosted, Tailscale-reachable).
+#   - No SARIF upload action (Gitea code scanning support is limited as of 2026).
+#     Instead: results.sarif + report.md are uploaded as build artifacts.
+#   - actions/upload-artifact@v3 (Gitea-compatible; v4 is GitHub-only).
+#   - No `permissions:` block — Gitea YAML ignores the GitHub-only key.
+#   - Infisical injection is identical.
+#   - Job fails on non-zero scan exit (same gate via FAIL_ON).
+
+name: Vulnerability Scan
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  vulnscan:
+    name: Agent Vulnerability Scan
+    # Use act_runner label registered on storulis Gitea.
+    # Change to `ubuntu-latest` if using a cloud runner.
+    runs-on: act_runner
+
+    steps:
+      # 1. Check out the repository being scanned.
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 2. Set up Python 3.11 (minimum required by vulnscan-agent).
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      # 3. Install vulnscan-agent and its dependencies.
+      - name: Install vulnscan-agent
+        run: pip install -e ops/tools/vulnscan-agent
+
+      # 4. Install static analysis tools (best-effort — missing tools are handled
+      #    gracefully by scan.sh via run_command returning {"error": "not_installed"}).
+      - name: Install static scanners (best-effort)
+        run: pip install semgrep pip-audit
+        continue-on-error: true
+
+      # 5. Install Infisical CLI for secrets injection.
+      - name: Install Infisical CLI
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/infisical/infisical-cli/setup.deb.sh' \
+            | sudo bash
+          sudo apt-get install -y infisical
+
+      # 6. Run the vulnerability scan.
+      #    INFISICAL_TOKEN must be set as a Gitea Actions secret.
+      #    FAIL_ON controls CI failure threshold.
+      #    Non-zero exit from scan.sh fails this step and the whole job.
+      - name: Run vulnerability scan
+        env:
+          INFISICAL_TOKEN: ${{ secrets.INFISICAL_TOKEN }}
+          # Self-hosted Infisical at infi.admin.lt — the act_runner on storulis
+          # reaches it over Tailscale. Without this the CLI defaults to cloud.
+          INFISICAL_API_URL: https://infi.admin.lt/api
+          FAIL_ON: HIGH
+          SCAN_WORKSPACE: ${{ github.workspace }}/scan
+        run: |
+          infisical run \
+            --projectId edd30857-23d4-4840-bf2f-2f31eaba2b83 \
+            --env prod \
+            -- bash ops/tools/vulnscan-agent/ci/scan.sh .
+
+      # 7. Upload scan artifacts (SARIF + markdown report).
+      #    Unlike GitHub Actions, Gitea does not have a code scanning / SARIF
+      #    viewer — artifacts are the primary way to preserve scan output.
+      #    `if: always()` ensures artifacts are uploaded even when the scan fails.
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: vulnscan-results-${{ github.sha }}
+          path: |
+            ${{ github.workspace }}/scan/results.sarif
+            ${{ github.workspace }}/scan/report.md
+          # Retain artifacts for 30 days; adjust to taste.
+          retention-days: 30
+        continue-on-error: true

@@ -1,0 +1,92 @@
+# vulnscan-agent GitHub Actions workflow template
+#
+# USAGE: Copy this file to .github/workflows/vulnscan.yml in the target repo.
+# Do NOT place it there from this template location — this is intentionally a
+# template in ops/tools/vulnscan-agent/ so it can be reviewed before adoption.
+#
+# Triggers: pull_request (scan changed code) + push to main (baseline gate).
+# Permissions: security-events:write is required for SARIF upload to code scanning.
+
+name: Vulnerability Scan
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read          # checkout
+  security-events: write  # upload SARIF to GitHub code scanning
+
+jobs:
+  vulnscan:
+    name: Agent Vulnerability Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Check out the repository being scanned.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Set up Python 3.11 (minimum required by vulnscan-agent).
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # 3. Install vulnscan-agent and its dependencies.
+      - name: Install vulnscan-agent
+        run: pip install -e ops/tools/vulnscan-agent
+
+      # 4. Install static analysis tools. Each is best-effort: scan.sh handles
+      #    missing tools gracefully (run_command returns {"error": "not_installed"}).
+      - name: Install static scanners (best-effort)
+        run: |
+          pip install semgrep        # SAST — highest value, install first
+          pip install pip-audit      # Known CVE check for Python deps
+          # gitleaks and trivy are installed via their own release channels;
+          # skip here unless you add dedicated installer steps.
+        continue-on-error: true
+
+      # 5. Install Infisical CLI for secrets injection.
+      #    See https://infisical.com/docs/cli/overview for current install instructions.
+      - name: Install Infisical CLI
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/infisical/infisical-cli/setup.deb.sh' \
+            | sudo bash
+          sudo apt-get install -y infisical
+
+      # 6. Run the vulnerability scan.
+      #    Secrets are injected by Infisical at runtime — none land in env directly.
+      #    INFISICAL_TOKEN must be stored as a GitHub Actions secret.
+      #    FAIL_ON controls the exit-code gate: HIGH means CRITICAL+HIGH fail CI.
+      - name: Run vulnerability scan
+        env:
+          INFISICAL_TOKEN: ${{ secrets.INFISICAL_TOKEN }}
+          # Self-hosted Infisical — without this the CLI defaults to Infisical
+          # Cloud and cannot find the project. Cloud runner must be able to
+          # reach infi.admin.lt (public or via VPN); else use the Gitea runner.
+          INFISICAL_API_URL: https://infi.admin.lt/api
+          FAIL_ON: ${{ vars.VULNSCAN_FAIL_ON || 'HIGH' }}
+          SCAN_WORKSPACE: ${{ github.workspace }}/scan
+        run: |
+          infisical run \
+            --projectId edd30857-23d4-4840-bf2f-2f31eaba2b83 \
+            --env prod \
+            -- bash ops/tools/vulnscan-agent/ci/scan.sh .
+
+      # 7. Upload SARIF to GitHub code scanning (Advanced Security feature).
+      #    This step runs even if the scan step fails so results are always visible.
+      #    results.sarif is written by complete_scan() in tools/findings.py.
+      - name: Upload SARIF to GitHub code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ github.workspace }}/scan/results.sarif
+          category: vulnscan-agent
+        # Requires GitHub Advanced Security (free for public repos).
+        # If the file does not exist (scan crashed before complete_scan),
+        # this step is skipped gracefully by the action.
+        continue-on-error: true
