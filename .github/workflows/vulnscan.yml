@@ -98,10 +98,14 @@ jobs:
           LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
-          ORCH_MODEL: ${{ inputs.orch_model }}
           FAIL_ON: ${{ inputs.fail_on }}
           SCAN_WORKSPACE: ${{ runner.temp }}/scan
-        run: bash ./agent/ci/scan.sh "target/${{ inputs.scan_path }}"
+          ORCH_MODEL_INPUT: ${{ inputs.orch_model }}
+        run: |
+          # Only export ORCH_MODEL when explicitly provided — an empty value
+          # would override the agent's built-in default with "" (400: empty model).
+          if [ -n "$ORCH_MODEL_INPUT" ]; then export ORCH_MODEL="$ORCH_MODEL_INPUT"; fi
+          bash ./agent/ci/scan.sh "target/${{ inputs.scan_path }}"
 
       - name: Upload SARIF to code scanning
         if: always()
